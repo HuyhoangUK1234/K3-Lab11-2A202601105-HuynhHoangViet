@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -36,11 +37,49 @@ class MonitoringAlert:
 
     def check_metrics(self) -> list[Alert]:
         """TODO: compute rates, append Alert objects when thresholds exceeded."""
-        raise NotImplementedError("Implement MonitoringAlert.check_metrics")
+        self.alerts.clear()
+        snapshot = self.snapshot()
+
+        checks = [
+            (
+                "block_rate",
+                snapshot["block_rate"],
+                self.block_rate_threshold,
+                "Blocked request rate is above threshold.",
+            ),
+            (
+                "rate_limit_hits",
+                float(self.rate_limit_hits),
+                float(self.rate_limit_hit_threshold),
+                "Rate-limit hits are above threshold.",
+            ),
+            (
+                "judge_fail_rate",
+                snapshot["judge_fail_rate"],
+                self.judge_fail_rate_threshold,
+                "LLM judge failure rate is above threshold.",
+            ),
+        ]
+
+        for metric, value, threshold, message in checks:
+            if value >= threshold and value > 0:
+                self.alerts.append(
+                    Alert(
+                        metric=metric,
+                        value=value,
+                        threshold=threshold,
+                        message=message,
+                    )
+                )
+
+        return self.alerts
 
     def export_json(self, filepath: str = "outputs/metrics.json"):
         """TODO: write metrics + alerts to JSON."""
-        raise NotImplementedError("Implement MonitoringAlert.export_json")
+        self.check_metrics()
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.snapshot(), indent=2), encoding="utf-8")
 
     def snapshot(self) -> dict:
         block_rate = (

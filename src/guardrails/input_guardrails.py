@@ -5,12 +5,27 @@ Lab 11 — Part 2A: Input Guardrails
   TODO 3: Input Guardrail Plugin (ADK)
 """
 import re
+import unicodedata
 
 from google.genai import types
 from google.adk.plugins import base_plugin
 from google.adk.agents.invocation_context import InvocationContext
 
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+
+
+def _canonicalize_input(text: str) -> str:
+    """Normalize text so obfuscated prompt-injection phrases are visible."""
+    if not text:
+        return ""
+
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = "".join(
+        " " if unicodedata.category(char) in {"Cf", "Cc", "Cs"} else char
+        for char in normalized
+    )
+    normalized = re.sub(r"[\s\W_]+", " ", normalized, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
 # ============================================================
@@ -41,15 +56,37 @@ def detect_injection(user_input: str) -> bool:
     Returns:
         True if injection detected, False otherwise
     """
+    text = _canonicalize_input(user_input)
+    compact_text = re.sub(r"\s+", "", text)
+
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        r"\bignore\s+(all\s+)?(previous|above|prior|earlier)\s+instructions\b",
+        r"\byou\s+are\s+now\b",
+        r"\bsystem\s+prompt\b",
+        r"\breveal\s+(your\s+)?(instructions|prompt)\b",
+        r"\bpretend\s+you\s+are\b",
+        r"\bact\s+as\s+(a\s+|an\s+)?unrestricted\b",
+        r"\bdeveloper\s+message\b",
+        r"\bshow\s+(me\s+)?(the\s+)?(admin\s+)?(password|api\s+key|secret)\b",
+        r"\bdisregard\s+(all\s+)?(previous|above|prior)\s+instructions\b",
+        r"\bdan\b",
     ]
 
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, text, re.IGNORECASE):
             return True
+
+    # Catch heavy spacing obfuscation such as "s y s t e m p r o m p t".
+    compact_signals = [
+        "ignoreallpreviousinstructions",
+        "ignorepreviousinstructions",
+        "systemprompt",
+        "revealyourinstructions",
+        "revealyourprompt",
+    ]
+    if any(signal in compact_text for signal in compact_signals):
+        return True
+
     return False
 
 
@@ -72,14 +109,18 @@ def topic_filter(user_input: str) -> bool:
     Returns:
         True if input should be BLOCKED (off-topic or blocked topic)
     """
-    input_lower = user_input.lower()
+    input_lower = _canonicalize_input(user_input)
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return True
-    # 2. If input doesn't contain any allowed topic -> return True
-    # 3. Otherwise -> return False (allow)
+    if not input_lower:
+        return True
 
-    pass  # Replace with your implementation
+    if any(re.search(rf"\b{re.escape(topic)}\b", input_lower) for topic in BLOCKED_TOPICS):
+        return True
+
+    if any(re.search(rf"\b{re.escape(topic)}\b", input_lower) for topic in ALLOWED_TOPICS):
+        return False
+
+    return True
 
 
 # ============================================================
@@ -139,7 +180,19 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         #    - If True: increment blocked_count, return self._block_response("...")
         # 3. If both are False: return None (let message through)
 
-        pass  # Replace with your implementation
+        if detect_injection(text):
+            self.blocked_count += 1
+            return self._block_response(
+                "Request blocked by input guardrail: possible prompt injection."
+            )
+
+        if topic_filter(text):
+            self.blocked_count += 1
+            return self._block_response(
+                "Request blocked by input guardrail: please ask about VinBank banking services."
+            )
+
+        return None
 
 
 # ============================================================
